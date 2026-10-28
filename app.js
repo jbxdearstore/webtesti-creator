@@ -71,8 +71,8 @@
   const stamp = () => new Date().toISOString().slice(0, 10);
   function exportOwners() {
     downloadCsv('owner-' + stamp() + '.csv',
-      ['id', 'nama_toko', 'email', 'aktif', 'kuota_mb', 'terpakai_mb', 'dibuat'],
-      owners.map((o) => [o.id, o.nama_toko, o.email, o.aktif ? 'ya' : 'tidak', mb(o.kuota_bytes), mb(o.terpakai_bytes || 0), o.dibuat]));
+      ['id', 'nama_toko', 'email', 'status', 'kuota_mb', 'terpakai_mb', 'folder_github', 'proyek_vercel', 'link', 'dibuat'],
+      owners.map((o) => [o.id, o.nama_toko, o.email, stOf(o), mb(o.kuota_bytes), mb(o.terpakai_bytes || 0), o.github_repo, o.vercel_project, o.domain, o.dibuat]));
     toast('File owner diunduh.');
   }
   async function exportTesti() {
@@ -98,15 +98,29 @@
   }
 
   /* ===== DAFTAR OWNER ===== */
+  const stOf = (o) => o.status || (o.aktif ? 'aktif' : 'nonaktif');
+  const ST = { aktif: ['on', 'Aktif'], nonaktif: ['warn', 'Nonaktif sementara'], dihapus: ['gray', 'Dihapus'] };
+  const fmtDate = (d) => (d ? new Date(d).toLocaleDateString('id-ID', { day: 'numeric', month: 'short', year: 'numeric' }) : '');
+
   function ownerEl(o) {
-    const r = h('div', 'item' + (o.aktif ? '' : ' off'));
+    const st = stOf(o);
+    const r = h('div', 'item' + (st === 'nonaktif' ? ' off' : st === 'dihapus' ? ' gone' : ''));
     const top = h('div', 'otop');
     const l = h('div');
     l.appendChild(h('div', 'nm', o.nama_toko));
     l.appendChild(h('div', 'muted small', o.email));
     top.appendChild(l);
-    top.appendChild(h('span', 'badge ' + (o.aktif ? 'on' : 'offb'), o.aktif ? 'Aktif' : 'Nonaktif'));
+    top.appendChild(h('span', 'badge ' + (ST[st] || ST.aktif)[0], (ST[st] || ST.aktif)[1]));
     r.appendChild(top);
+
+    const info = h('div', 'info');
+    info.textContent = 'Folder GitHub: ' + (o.github_repo || 'belum diisi') +
+      '\nProyek Vercel: ' + (o.vercel_project || 'belum diisi') +
+      '\nLink: ' + (o.domain || 'belum diisi') +
+      (st === 'dihapus' && o.dihapus_pada ? '\nDihapus: ' + fmtDate(o.dihapus_pada) : '');
+    r.appendChild(info);
+
+    if (st === 'dihapus') return r;
 
     const used = o.terpakai_bytes || 0, max = o.kuota_bytes || 1;
     const q = h('div', 'qrow');
@@ -120,11 +134,13 @@
     r.appendChild(bar);
 
     const a = h('div', 'acts');
+    const b0 = h('button', 'btn ghost sm', 'Catatan website'); b0.onclick = () => openNote(o);
     const b1 = h('button', 'btn ghost sm', 'Salin config.js'); b1.onclick = () => showConfig(o);
     const b2 = h('button', 'btn ghost sm', 'Ganti email'); b2.onclick = () => changeEmail(o);
     const b3 = h('button', 'btn ghost sm', 'Ubah kuota'); b3.onclick = () => changeQuota(o);
-    const b4 = h('button', o.aktif ? 'btn danger sm' : 'btn sm', o.aktif ? 'Nonaktifkan' : 'Aktifkan'); b4.onclick = () => toggle(o);
-    [b1, b2, b3, b4].forEach((b) => a.appendChild(b));
+    const on = st === 'aktif';
+    const b4 = h('button', on ? 'btn danger sm' : 'btn sm', on ? 'Nonaktifkan sementara' : 'Aktifkan'); b4.onclick = () => toggle(o);
+    [b0, b1, b2, b3, b4].forEach((b) => a.appendChild(b));
     r.appendChild(a);
     return r;
   }
@@ -132,7 +148,7 @@
     $('rows').replaceChildren(...owners.map(ownerEl));
     $('empty').hidden = owners.length > 0;
     $('stOwner').textContent = owners.length;
-    $('stAktif').textContent = owners.filter((o) => o.aktif).length;
+    $('stAktif').textContent = owners.filter((o) => stOf(o) === 'aktif').length;
     $('stMb').textContent = mb(owners.reduce((s, o) => s + (o.terpakai_bytes || 0), 0));
   }
   async function load() {
@@ -143,11 +159,13 @@
 
   /* ===== AKSI ===== */
   async function toggle(o) {
-    if (o.aktif && !confirm('Nonaktifkan ' + o.nama_toko + '? Website-nya langsung menampilkan "Layanan tidak aktif".')) return;
-    const { error } = await sb.from('owners').update({ aktif: !o.aktif }).eq('id', o.id);
-    if (error) return toast('Gagal mengubah status.');
-    o.aktif = !o.aktif; render();
-    toast(o.nama_toko + (o.aktif ? ' diaktifkan.' : ' dinonaktifkan.'));
+    const on = stOf(o) === 'aktif';
+    if (on && !confirm('Nonaktifkan sementara ' + o.nama_toko + '? Website-nya langsung menampilkan "Layanan ini sedang tidak aktif" dan buyer tidak bisa masuk dashboard. Folder, proyek, dan datanya tetap ada.')) return;
+    const patch = on ? { aktif: false, status: 'nonaktif' } : { aktif: true, status: 'aktif' };
+    const { error } = await sb.from('owners').update(patch).eq('id', o.id);
+    if (error) return toast('Gagal mengubah status. Pastikan SQL tahap 1 sudah dijalankan.');
+    Object.assign(o, patch); render();
+    toast(o.nama_toko + (on ? ' dinonaktifkan sementara.' : ' diaktifkan.'));
   }
   async function changeEmail(o) {
     const v = prompt('Email Google baru untuk ' + o.nama_toko + ':', o.email);
@@ -188,6 +206,119 @@
     } finally { btn.disabled = false; btn.textContent = 'Simpan'; }
   }
 
+  /* ===== CATATAN WEBSITE BUYER ===== */
+  const NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+  let noteOwner = null;
+  function openNote(o) {
+    noteOwner = o;
+    $('noteTitle').textContent = 'Catatan website: ' + o.nama_toko;
+    $('nRepo').value = o.github_repo || '';
+    $('nProj').value = o.vercel_project || '';
+    $('nDomain').value = o.domain || '';
+    $('modalNote').hidden = false;
+  }
+  async function saveNote(e) {
+    e.preventDefault();
+    const o = noteOwner;
+    const repo = $('nRepo').value.trim(), proj = $('nProj').value.trim();
+    let dom = $('nDomain').value.trim().toLowerCase().replace(/^https?:\/\//, '').replace(/\/.*$/, '');
+    if (dom && dom.indexOf('.') < 0) dom += '.vercel.app';
+    if (repo && !NAME_RE.test(repo)) return toast('Nama folder GitHub hanya boleh huruf, angka, titik, strip, dan garis bawah.');
+    if (proj && !NAME_RE.test(proj)) return toast('Nama proyek Vercel hanya boleh huruf, angka, titik, strip, dan garis bawah.');
+    if (dom && !/^[a-z0-9][a-z0-9-]*\.vercel\.app$/.test(dom)) return toast('Link harus berakhiran .vercel.app.');
+    const patch = { github_repo: repo || null, vercel_project: proj || null, domain: dom || null };
+    const btn = $('nSave');
+    btn.disabled = true;
+    const { error } = await sb.from('owners').update(patch).eq('id', o.id);
+    btn.disabled = false;
+    if (error) return toast(error.code === '23505' ? 'Folder, proyek, atau link itu sudah dipakai buyer lain.' : 'Gagal menyimpan. Pastikan SQL tahap 1 sudah dijalankan.');
+    Object.assign(o, patch); render();
+    $('modalNote').hidden = true;
+    toast('Catatan disimpan.');
+  }
+
+  /* ===== SALINAN INDUK ===== */
+  const FILE_RE = /^[A-Za-z0-9_.-]+\.(html|js|css|json|txt|svg)$/i;
+  const kb = (s) => (new Blob([s]).size / 1024).toFixed(1);
+  let induk = null, indukHist = [], picked = {};
+
+  async function loadInduk() {
+    const cur = await sb.from('induk_versi').select('*').order('versi', { ascending: false }).limit(1);
+    if (cur.error) throw new Error('Gagal memuat salinan induk. Pastikan SQL tahap 1 sudah dijalankan.');
+    induk = cur.data[0] || null;
+    const hist = await sb.from('induk_versi').select('id,versi,dibuat,catatan').order('versi', { ascending: false }).limit(15);
+    indukHist = hist.error ? [] : hist.data;
+  }
+  function renderInduk() {
+    $('indukInfo').textContent = induk
+      ? 'Versi ' + induk.versi + ', disimpan ' + fmtDate(induk.dibuat) + '. Website buyer baru memakai versi ini.'
+      : 'Belum ada salinan induk. Pilih semua file website (index.html, app.js, admin.html, admin.js, privacy.html) lalu simpan.';
+    const f = $('indukFiles');
+    f.replaceChildren();
+    const files = induk ? induk.files : {};
+    Object.keys(files).sort().forEach((n) => {
+      const r = h('div', 'frow');
+      r.appendChild(h('span', null, n));
+      r.appendChild(h('span', 'muted small', kb(files[n]) + ' KB'));
+      f.appendChild(r);
+    });
+    const hh = $('indukHist');
+    hh.replaceChildren();
+    if (indukHist.length > 1) {
+      hh.appendChild(h('label', null, 'Versi sebelumnya'));
+      indukHist.slice(1).forEach((v) => {
+        const r = h('div', 'frow');
+        const t = h('span', 'small', 'Versi ' + v.versi + ', ' + fmtDate(v.dibuat) + (v.catatan ? ': ' + v.catatan : ''));
+        const b = h('button', 'btn ghost sm', 'Pulihkan');
+        b.onclick = () => restoreInduk(v);
+        r.appendChild(t); r.appendChild(b);
+        hh.appendChild(r);
+      });
+    }
+  }
+  async function pickFiles(ev) {
+    picked = {};
+    let total = 0;
+    for (const f of ev.target.files) {
+      if (f.name.toLowerCase() === 'config.js') { toast('config.js dilewati karena dibuat otomatis untuk tiap buyer.'); continue; }
+      if (!FILE_RE.test(f.name)) { toast(f.name + ' dilewati: jenis file tidak didukung.'); continue; }
+      if (f.size > 600 * 1024) { toast(f.name + ' dilewati: lebih dari 600 KB.'); continue; }
+      total += f.size;
+      if (total > 3 * 1048576) { toast('Total file terlalu besar (maksimal 3 MB).'); picked = {}; break; }
+      picked[f.name] = await f.text();
+    }
+    const n = Object.keys(picked);
+    $('indukPicked').textContent = n.length ? 'Dipilih: ' + n.join(', ') : '';
+  }
+  async function saveInduk() {
+    const names = Object.keys(picked);
+    if (!names.length) return toast('Pilih file dulu.');
+    const base = induk ? induk.files : {};
+    const files = Object.assign({}, base, picked);
+    if (!files['index.html']) return toast('File index.html harus ada di salinan induk.');
+    const ganti = names.filter((n) => n in base), baru = names.filter((n) => !(n in base));
+    const ver = (induk ? induk.versi : 0) + 1;
+    if (!confirm('Simpan sebagai versi ' + ver + '?' + (ganti.length ? '\nDiganti: ' + ganti.join(', ') : '') + (baru.length ? '\nDitambah: ' + baru.join(', ') : ''))) return;
+    const btn = $('indukSave');
+    btn.disabled = true;
+    const { error } = await sb.from('induk_versi').insert({ versi: ver, catatan: $('indukNote').value.trim() || null, files });
+    btn.disabled = false;
+    if (error) return toast(error.code === '23505' ? 'Versi bentrok. Tutup lalu buka lagi.' : 'Gagal menyimpan versi baru.');
+    picked = {}; $('indukPick').value = ''; $('indukNote').value = ''; $('indukPicked').textContent = '';
+    try { await loadInduk(); renderInduk(); } catch (e) { toast(e.message); }
+    toast('Versi ' + ver + ' disimpan.');
+  }
+  async function restoreInduk(v) {
+    if (!confirm('Pulihkan isi versi ' + v.versi + ' sebagai versi baru?')) return;
+    const { data, error } = await sb.from('induk_versi').select('files').eq('id', v.id).maybeSingle();
+    if (error || !data) return toast('Gagal membaca versi itu.');
+    const ver = (induk ? induk.versi : 0) + 1;
+    const res = await sb.from('induk_versi').insert({ versi: ver, catatan: 'Pulihkan versi ' + v.versi, files: data.files });
+    if (res.error) return toast('Gagal memulihkan.');
+    try { await loadInduk(); renderInduk(); } catch (e) { toast(e.message); }
+    toast('Versi ' + ver + ' disimpan.');
+  }
+
   /* ===== LOGIN ===== */
   async function boot(session) {
     const uid = session.user.id;
@@ -221,6 +352,18 @@
   $('cfgCopy').onclick = copyConfig;
   $('bExpOwner').onclick = exportOwners;
   $('bExpTesti').onclick = exportTesti;
+
+  $('bInduk').onclick = async () => {
+    try { await loadInduk(); } catch (e) { return toast(e.message); }
+    picked = {}; $('indukPick').value = ''; $('indukPicked').textContent = ''; $('indukNote').value = '';
+    renderInduk();
+    $('modalInduk').hidden = false;
+  };
+  $('indukPick').onchange = pickFiles;
+  $('indukSave').onclick = saveInduk;
+  $('indukClose').onclick = () => { $('modalInduk').hidden = true; };
+  $('formNote').onsubmit = saveNote;
+  $('nCancel').onclick = () => { $('modalNote').hidden = true; };
 
   sb.auth.onAuthStateChange((ev, session) => {
     if (session) boot(session);

@@ -140,7 +140,8 @@
     const b3 = h('button', 'btn ghost sm', 'Ubah kuota'); b3.onclick = () => changeQuota(o);
     const on = st === 'aktif';
     const b4 = h('button', on ? 'btn danger sm' : 'btn sm', on ? 'Nonaktifkan sementara' : 'Aktifkan'); b4.onclick = () => toggle(o);
-    [b0, b1, b2, b3, b4].forEach((b) => a.appendChild(b));
+    const b5 = h('button', 'btn danger sm', 'Hapus website'); b5.onclick = () => openDel(o);
+    [b0, b1, b2, b3, b4, b5].forEach((b) => a.appendChild(b));
     r.appendChild(a);
     return r;
   }
@@ -367,6 +368,144 @@
     } finally { btn.disabled = false; }
   }
 
+  /* ===== HAPUS WEBSITE BUYER + ZIP ===== */
+  const pubUrl = (p) => C.SUPABASE_URL + '/storage/v1/object/public/testimoni/' + String(p).split('/').map(encodeURIComponent).join('/');
+  const toHex = (buf) => Array.from(new Uint8Array(buf)).map((b) => b.toString(16).padStart(2, '0')).join('');
+  const sha256 = async (u8) => toHex(await crypto.subtle.digest('SHA-256', u8));
+  const b64ToU8 = (b64) => Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  let delO = null, delZip = null, delBusy = false;
+
+  async function allRows(table, ownerId) {
+    const out = [];
+    for (let from = 0; ; from += 500) {
+      const { data, error } = await sb.from(table).select('*').eq('owner_id', ownerId).order('dibuat', { ascending: true }).range(from, from + 499);
+      if (error) throw new Error('Gagal membaca data ' + table + '.');
+      out.push(...data);
+      if (data.length < 500) break;
+    }
+    return out;
+  }
+
+  async function buildZip(o, say) {
+    if (!window.JSZip) throw new Error('Pustaka zip belum termuat. Muat ulang halaman.');
+    say('Mengambil data buyer\u2026');
+    const ow = await sb.from('owners').select('*').eq('id', o.id).single();
+    if (ow.error) throw new Error('Gagal membaca data buyer.');
+    const st = await sb.from('settings').select('*').eq('owner_id', o.id).maybeSingle();
+    if (st.error) throw new Error('Gagal membaca pengaturan tampilan.');
+    const testi = await allRows('testimonials', o.id);
+
+    say('Mengambil file website dari GitHub\u2026');
+    const web = (await api({ action: 'ambil', owner_id: o.id })).files;
+
+    const paths = [...new Set(testi.map((t) => t.media_path).filter(Boolean).concat(st.data && st.data.logo_path ? [st.data.logo_path] : []))];
+    const entries = {};
+    const put = (name, u8) => { entries[name] = u8; };
+    put('data/owner.json', enc.encode(JSON.stringify(ow.data, null, 2)));
+    put('data/settings.json', enc.encode(JSON.stringify(st.data || null, null, 2)));
+    put('data/testimonials.json', enc.encode(JSON.stringify(testi, null, 2)));
+    Object.keys(web).forEach((n) => put('website/' + n, b64ToU8(web[n])));
+
+    let done = 0;
+    const queue = paths.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const p = queue.shift();
+        const r = await fetch(pubUrl(p));
+        if (!r.ok) throw new Error('Gagal mengunduh foto ' + p + '. Tidak ada yang dihapus.');
+        put('foto/' + p, new Uint8Array(await r.arrayBuffer()));
+        say('Mengunduh foto ' + (++done) + ' dari ' + paths.length + '\u2026');
+      }
+    };
+    if (paths.length) { say('Mengunduh foto 0 dari ' + paths.length + '\u2026'); await Promise.all([worker(), worker(), worker(), worker()]); }
+
+    say('Menyusun dan menandatangani zip\u2026');
+    const hash = {};
+    for (const n of Object.keys(entries)) hash[n] = await sha256(entries[n]);
+    const b = ow.data;
+    const manifest = {
+      format: 'testi-zip', versi_format: 1, dibuat: new Date().toISOString(),
+      buyer: { id: b.id, nama_toko: b.nama_toko, email: b.email, kuota_bytes: b.kuota_bytes, terpakai_bytes: b.terpakai_bytes, github_repo: b.github_repo, vercel_project: b.vercel_project, domain: b.domain, induk_versi: b.induk_versi, dibuat: b.dibuat },
+      hitung: { testimoni: testi.length, foto: paths.length, file_website: Object.keys(web).length },
+      hash
+    };
+    const mText = JSON.stringify(manifest);
+    const sig = (await api({ action: 'tanda', manifest: mText })).sig;
+    const zip = new JSZip();
+    zip.file('manifest.json', mText);
+    zip.file('tanda-tangan.txt', sig);
+    Object.keys(entries).forEach((n) => zip.file(n, entries[n]));
+    const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+
+    // baca balik zip: semua file harus ada
+    const back = await JSZip.loadAsync(blob);
+    for (const n of Object.keys(hash)) if (!back.file(n)) throw new Error('Zip tidak lengkap (' + n + '). Tidak ada yang dihapus.');
+    for (const n of Object.keys(hash).filter((x) => !x.startsWith('foto/'))) {
+      if ((await sha256(await back.file(n).async('uint8array'))) !== hash[n]) throw new Error('Zip rusak (' + n + '). Tidak ada yang dihapus.');
+    }
+    const day = new Date().toISOString().slice(0, 10);
+    return { blob, name: (b.github_repo || 'website') + '-' + day + '.zip', manifest };
+  }
+  const enc = new TextEncoder();
+
+  function downloadBlob(blob, name) {
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = name;
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+  }
+
+  function delStage(n) {
+    const one = n === 1;
+    $('delTypeLbl').hidden = !one; $('delType').hidden = !one;
+    $('delAgain').hidden = one;
+    $('delGo').textContent = one ? 'Unduh zip' : 'Sudah tersimpan, hapus sekarang';
+    $('delLead').textContent = one
+      ? 'Datanya diunduh dulu sebagai zip ke perangkatmu. Folder GitHub dan proyek Vercel baru dihapus setelah kamu memastikan zip tersimpan. Data testimoni di Supabase tidak dihapus.'
+      : 'Zip sudah diunduh: ' + delZip.name + ' (' + mb(delZip.blob.size) + ' MB). Cek di perangkatmu bahwa file itu tersimpan. Setelah kamu lanjut, folder GitHub dan proyek Vercel dihapus permanen.';
+  }
+
+  async function openDel(o) {
+    if (!o.github_repo || !o.vercel_project) return toast('Isi Catatan website dulu (folder GitHub dan proyek Vercel).');
+    delO = o; delZip = null;
+    const q = (f) => f.then((r) => (r.count == null ? '?' : r.count));
+    const nT = await q(sb.from('testimonials').select('id', { count: 'exact', head: true }).eq('owner_id', o.id));
+    const nF = await q(sb.from('testimonials').select('id', { count: 'exact', head: true }).eq('owner_id', o.id).not('media_path', 'is', null));
+    const sum = $('delSum'); sum.replaceChildren();
+    [['Nama toko', o.nama_toko], ['Email buyer', o.email], ['Folder GitHub', o.github_repo], ['Proyek Vercel', o.vercel_project], ['Link', o.domain || '-'],
+     ['Testimoni', nT], ['Testimoni berfoto', nF], ['Penyimpanan foto', mb(o.terpakai_bytes || 0) + ' / ' + mb(o.kuota_bytes) + ' MB'], ['Versi induk', o.induk_versi || '-']]
+      .forEach((r) => { const d = h('div', 'srow'); d.appendChild(h('span', 'muted', r[0])); d.appendChild(h('span', null, String(r[1]))); sum.appendChild(d); });
+    $('delTypeLbl').textContent = 'Ketik nama toko "' + o.nama_toko + '" untuk konfirmasi';
+    $('delType').value = ''; $('delProg').hidden = true;
+    delStage(1);
+    $('modalDel').hidden = false;
+  }
+
+  async function delGo() {
+    if (delBusy) return;
+    const prog = $('delProg'), say = (t) => { prog.hidden = false; prog.textContent = t; };
+    delBusy = true; $('delGo').disabled = true; $('delCancel').disabled = true;
+    try {
+      if (!delZip) {
+        if ($('delType').value.trim() !== delO.nama_toko) throw new Error('Nama toko belum sama dengan yang diminta.');
+        delZip = await buildZip(delO, say);
+        downloadBlob(delZip.blob, delZip.name);
+        prog.hidden = true;
+        delStage(2);
+      } else {
+        say('Menghapus proyek Vercel dan folder GitHub\u2026');
+        const j = await api({ action: 'hapus', owner_id: delO.id });
+        $('modalDel').hidden = true;
+        await load();
+        toast(delO.nama_toko + ' dihapus. Zip: ' + delZip.name);
+        if (j.warn && j.warn.length) setTimeout(() => alert(j.warn.join('\n\n')), 400);
+        delZip = null;
+      }
+    } catch (er) { prog.hidden = true; toast(er.message); }
+    finally { delBusy = false; $('delGo').disabled = false; $('delCancel').disabled = false; }
+  }
+
   /* ===== LOGIN ===== */
   async function boot(session) {
     const uid = session.user.id;
@@ -417,6 +556,10 @@
   $('wCancel').onclick = () => { $('modalNew').hidden = true; };
   $('wSlug').oninput = () => { $('wPrev').textContent = 'Link: ' + ($('wSlug').value.trim().toLowerCase() || 'namatoko') + '.vercel.app'; };
   $('formNew').onsubmit = buatWebsite;
+
+  $('delGo').onclick = delGo;
+  $('delAgain').onclick = () => { if (delZip) downloadBlob(delZip.blob, delZip.name); };
+  $('delCancel').onclick = () => { if (!delBusy) { $('modalDel').hidden = true; delZip = null; } };
 
   sb.auth.onAuthStateChange((ev, session) => {
     if (session) boot(session);

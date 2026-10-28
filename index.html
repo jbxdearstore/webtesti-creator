@@ -36,6 +36,11 @@ body{background:var(--bg);color:var(--text);font:15px/1.5 system-ui,-apple-syste
 .badge.gray{background:#ECEEF3;color:var(--muted)}
 .item.gone{opacity:.6}
 .info{font-size:12px;color:var(--muted);margin-top:8px;line-height:1.6;white-space:pre-line;word-break:break-all}
+.cmodal{position:fixed;inset:0;background:rgba(10,12,20,.55);display:flex;align-items:center;justify-content:center;padding:20px;z-index:50}
+.cmodal[hidden]{display:none}
+.cbox{background:var(--card,#fff);width:100%;max-width:420px;max-height:90vh;overflow:auto;border-radius:20px;padding:22px 20px;box-shadow:0 20px 60px rgba(0,0,0,.35)}
+.srow{display:flex;justify-content:space-between;gap:12px;padding:7px 0;border-bottom:1px solid var(--line);font-size:13px;word-break:break-all}
+.btn.red{background:var(--danger);border-color:var(--danger);color:#fff}
 .frow{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:8px 0;border-bottom:1px solid var(--line)}
 #indukPicked{margin-top:6px;font-size:12px;color:var(--muted)}
 .qrow{display:flex;justify-content:space-between;font-size:12px;margin:10px 0 4px;color:var(--muted)}
@@ -140,6 +145,22 @@ textarea{font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;min-height:150px;re
   </form>
 </div>
 
+<div id="modalDel" class="cmodal" hidden>
+  <div class="cbox">
+    <h2>Hapus website buyer</h2>
+    <p class="muted small" id="delLead"></p>
+    <div id="delSum" style="margin:12px 0"></div>
+    <label for="delType" id="delTypeLbl"></label>
+    <input id="delType" autocomplete="off">
+    <div class="muted small" id="delProg" style="margin-top:10px" hidden></div>
+    <div class="btns" style="flex-wrap:wrap">
+      <button type="button" id="delCancel" class="btn ghost">Batal</button>
+      <button type="button" id="delAgain" class="btn ghost" hidden>Unduh lagi</button>
+      <button type="button" id="delGo" class="btn red">Unduh zip</button>
+    </div>
+  </div>
+</div>
+
 <div id="modalNote" class="modal" hidden>
   <form id="formNote" class="box" autocomplete="off">
     <h2 id="noteTitle">Catatan website</h2>
@@ -178,6 +199,7 @@ textarea{font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;min-height:150px;re
 <div id="toast" class="toast" hidden></div>
 
 <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdn.jsdelivr.net/npm/jszip@3.10.1/dist/jszip.min.js"></script>
 <script src="config.js"></script>
 <script src="app.js"></script>
 </body>

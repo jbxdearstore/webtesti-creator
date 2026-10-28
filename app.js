@@ -319,6 +319,54 @@
     toast('Versi ' + ver + ' disimpan.');
   }
 
+  /* ===== BUAT WEBSITE BUYER ===== */
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  async function api(body) {
+    const { data } = await sb.auth.getSession();
+    const token = data && data.session ? data.session.access_token : '';
+    const r = await fetch('/api/buat-website', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + token }, body: JSON.stringify(body) });
+    let j = null;
+    try { j = await r.json(); } catch (e) { j = null; }
+    if (!j) throw new Error('Server tidak merespons. Pastikan folder api sudah terpasang di panel.');
+    if (!j.ok) throw new Error(j.error || 'Gagal.');
+    return j;
+  }
+  async function buatWebsite(e) {
+    e.preventDefault();
+    const nama = $('wNama').value.trim(), email = $('wEmail').value.trim().toLowerCase(), slug = $('wSlug').value.trim().toLowerCase();
+    if (!nama) return toast('Nama toko wajib diisi.');
+    if (!EMAIL_RE.test(email)) return toast('Format email tidak valid.');
+    if (!/^[a-z0-9][a-z0-9-]{1,38}[a-z0-9]$/.test(slug)) return toast('Nama link hanya huruf kecil, angka, dan strip (3 sampai 40 karakter).');
+    if (!confirm('Buat website untuk ' + nama + '?\nLink: https://' + slug + '.vercel.app\nEmail buyer: ' + email)) return;
+    const btn = $('wSave'), prog = $('wProg');
+    btn.disabled = true; prog.hidden = false;
+    prog.textContent = 'Membuat folder, proyek, dan link. Tunggu sekitar 30 detik\u2026';
+    try {
+      const j = await api({ action: 'buat', nama_toko: nama, email, slug });
+      await load();
+      prog.textContent = 'Vercel sedang membangun website\u2026';
+      let state = '';
+      for (let i = 0; i < 40; i++) {
+        await sleep(4000);
+        try { state = (await api({ action: 'status', project: j.project })).state; } catch (er) { state = ''; }
+        if (state === 'READY' || state === 'ERROR' || state === 'CANCELED') break;
+      }
+      $('modalNew').hidden = true;
+      if (state === 'READY') {
+        toast('Website aktif: ' + j.domain);
+        if (confirm('Website aktif di https://' + j.domain + '. Buka sekarang?')) window.open('https://' + j.domain, '_blank');
+      } else if (state === 'ERROR' || state === 'CANCELED') {
+        toast('Vercel gagal membangun website. Periksa proyek ' + j.project + ' di Vercel.');
+      } else {
+        toast('Website masih dibangun. Cek lagi sebentar lagi di https://' + j.domain);
+      }
+      if (j.warn && j.warn.length) setTimeout(() => alert(j.warn.join('\n\n')), 400);
+    } catch (er) {
+      prog.hidden = true;
+      toast(er.message);
+    } finally { btn.disabled = false; }
+  }
+
   /* ===== LOGIN ===== */
   async function boot(session) {
     const uid = session.user.id;
@@ -364,6 +412,11 @@
   $('indukClose').onclick = () => { $('modalInduk').hidden = true; };
   $('formNote').onsubmit = saveNote;
   $('nCancel').onclick = () => { $('modalNote').hidden = true; };
+
+  $('bNew').onclick = () => { $('formNew').reset(); $('wPrev').textContent = 'Link: namatoko.vercel.app'; $('wProg').hidden = true; $('modalNew').hidden = false; };
+  $('wCancel').onclick = () => { $('modalNew').hidden = true; };
+  $('wSlug').oninput = () => { $('wPrev').textContent = 'Link: ' + ($('wSlug').value.trim().toLowerCase() || 'namatoko') + '.vercel.app'; };
+  $('formNew').onsubmit = buatWebsite;
 
   sb.auth.onAuthStateChange((ev, session) => {
     if (session) boot(session);

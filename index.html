@@ -84,7 +84,8 @@ textarea{font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;min-height:150px;re
       <div class="stat"><b id="stMb">0</b><span class="muted small">MB terpakai</span></div>
     </div>
     <div class="tools">
-      <button id="bAdd" class="btn sm">+ Tambah owner</button>
+      <button id="bNew" class="btn sm">+ Buat website baru</button>
+      <button id="bAdd" class="btn ghost sm">+ Tambah owner manual</button>
       <button id="bInduk" class="btn ghost sm">Salinan induk</button>
       <button id="bExpOwner" class="btn ghost sm">Export owner (CSV)</button>
       <button id="bExpTesti" class="btn ghost sm">Export testimoni (CSV)</button>
@@ -120,6 +121,25 @@ textarea{font:12px/1.5 ui-monospace,Menlo,Consolas,monospace;min-height:150px;re
     </div>
   </div>
 </div>
+<div id="modalNew" class="modal" hidden>
+  <form id="formNew" class="box" autocomplete="off">
+    <h2>Buat website buyer</h2>
+    <p class="muted small">Website dibuat dari salinan induk terbaru: folder GitHub, proyek Vercel, dan link dibuat otomatis.</p>
+    <label for="wNama">Nama toko *</label>
+    <input id="wNama" maxlength="60" required>
+    <label for="wEmail">Email Google buyer *</label>
+    <input id="wEmail" type="email" placeholder="buyer@gmail.com" required>
+    <label for="wSlug">Nama link *</label>
+    <input id="wSlug" maxlength="40" placeholder="namatoko" required>
+    <div class="muted small" id="wPrev" style="margin-top:6px">Link: namatoko.vercel.app</div>
+    <div class="muted small" id="wProg" style="margin-top:10px" hidden></div>
+    <div class="btns">
+      <button type="button" id="wCancel" class="btn ghost">Batal</button>
+      <button type="submit" id="wSave" class="btn">Buat website</button>
+    </div>
+  </form>
+</div>
+
 <div id="modalNote" class="modal" hidden>
   <form id="formNote" class="box" autocomplete="off">
     <h2 id="noteTitle">Catatan website</h2>

@@ -163,6 +163,107 @@ async function status(jwt, project) {
   return { ok: true, state: x ? (x.readyState || x.state) : 'NONE' };
 }
 
+// ===== TAHAP 3: ambil file website, tanda tangan zip, hapus website =====
+const crypto = require('crypto');
+const FORBID = ['testicreatorxdear']; // tidak boleh dihapus apa pun yang terjadi
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const NAME_OK = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+const aman = (n) => typeof n === 'string' && n.startsWith(PREFIX) && NAME_OK.test(n) && !FORBID.includes(n.toLowerCase());
+
+async function ambilOwner(jwt, id) {
+  if (!UUID_RE.test(String(id || ''))) throw new Gagal('ID buyer tidak valid.');
+  const o = await db(jwt, 'owners?select=*&id=eq.' + id);
+  if (!o.ok || !o.body || !o.body[0]) throw new Gagal('Buyer tidak ditemukan.');
+  return o.body[0];
+}
+
+async function ambil(jwt, id) {
+  const o = await ambilOwner(jwt, id);
+  if (!aman(o.github_repo)) throw new Gagal('Nama folder tidak berawalan ' + PREFIX + ', panel menolak membacanya.');
+  const u = await gh('/user');
+  if (!u.ok) throw new Gagal('Kunci GitHub ditolak.');
+  const base = '/repos/' + u.body.login + '/' + o.github_repo;
+  const tr = await gh(base + '/git/trees/main?recursive=1');
+  if (!tr.ok) throw new Gagal('Gagal membaca folder GitHub buyer (kode ' + tr.status + ').');
+  const blobs = (tr.body.tree || []).filter((t) => t.type === 'blob');
+  if (!blobs.length || blobs.length > 80) throw new Gagal('Jumlah file di folder GitHub tidak wajar (' + blobs.length + ').');
+  const res = await Promise.all(blobs.map((b) => gh(base + '/git/blobs/' + b.sha)));
+  const files = {};
+  res.forEach((r, i) => {
+    if (!r.ok) throw new Gagal('Gagal membaca file ' + blobs[i].path + '.');
+    files[blobs[i].path] = String(r.body.content || '').replace(/\n/g, '');
+  });
+  return { ok: true, files };
+}
+
+function sign(text) {
+  if (!process.env.ZIP_SECRET) throw new Gagal('ZIP_SECRET belum diisi di Environment Variables Vercel.');
+  return crypto.createHmac('sha256', process.env.ZIP_SECRET).update(text, 'utf8').digest('hex');
+}
+function tanda(manifest) {
+  const m = String(manifest || '');
+  if (!m || m.length > 2000000) throw new Gagal('Isi manifest tidak valid.');
+  return { ok: true, sig: sign(m) };
+}
+function periksa(manifest, sig) {
+  const a = Buffer.from(sign(String(manifest || '')), 'hex');
+  const b = Buffer.from(String(sig || '').trim(), 'hex');
+  return { ok: true, valid: a.length === b.length && crypto.timingSafeEqual(a, b) };
+}
+
+async function hapus(jwt, id) {
+  const o = await ambilOwner(jwt, id);
+  if (o.status === 'dihapus') throw new Gagal('Website ini sudah dihapus.');
+  const repo = o.github_repo, proj = o.vercel_project;
+  if (!aman(repo) || !aman(proj)) throw new Gagal('Nama folder atau proyek tidak berawalan ' + PREFIX + ', jadi panel menolak menghapusnya.');
+  const u = await gh('/user');
+  if (!u.ok) throw new Gagal('Kunci GitHub ditolak.');
+  const login = u.body.login, warn = [];
+
+  // Pastikan yang akan dihapus benar-benar milik buyer ini
+  const pj = await vc('/v9/projects/' + encodeURIComponent(proj));
+  let projAda = true;
+  if (pj.status === 404) projAda = false;
+  else if (!pj.ok) throw new Gagal('Gagal membaca proyek Vercel (kode ' + pj.status + ').');
+  else {
+    const lr = String((pj.body.link && pj.body.link.repo) || '').split('/').pop().toLowerCase();
+    if (lr !== repo.toLowerCase()) throw new Gagal('Proyek Vercel ' + proj + ' tidak terhubung ke folder ' + repo + ', jadi tidak dihapus.');
+  }
+  const rp = await gh('/repos/' + login + '/' + repo);
+  let repoAda = true;
+  if (rp.status === 404) repoAda = false;
+  else if (!rp.ok) throw new Gagal('Gagal membaca folder GitHub (kode ' + rp.status + ').');
+
+  // 1. Proyek Vercel (website langsung offline). Kalau gagal, folder GitHub belum disentuh.
+  if (projAda) {
+    const d = await vc('/v9/projects/' + pj.body.id, 'DELETE');
+    if (!d.ok && d.status !== 404) throw new Gagal('Gagal menghapus proyek Vercel (kode ' + d.status + '). Folder GitHub belum disentuh.');
+  }
+  // 2. Folder GitHub
+  if (repoAda) {
+    const d = await gh('/repos/' + login + '/' + repo, 'DELETE');
+    if (!d.ok && d.status !== 404) warn.push('Folder GitHub ' + repo + ' belum terhapus (kode ' + d.status + '). Hapus manual di GitHub.');
+  }
+  // 3. Keluarkan link dari daftar tamu tepercaya Supabase
+  try {
+    const cfg = await sbm('/v1/projects/' + SUPABASE_REF + '/config/auth');
+    if (!cfg.ok) throw new Error('baca ' + cfg.status);
+    const buang = ['https://' + o.domain + '/**', 'https://' + proj + '.vercel.app/**'];
+    const list = String(cfg.body.uri_allow_list || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const baru = list.filter((x) => !buang.includes(x));
+    if (baru.length !== list.length) {
+      const up = await sbm('/v1/projects/' + SUPABASE_REF + '/config/auth', 'PATCH', { uri_allow_list: baru.join(',') });
+      if (!up.ok) throw new Error('tulis ' + up.status);
+    }
+  } catch (e) {
+    warn.push('Link belum dikeluarkan dari daftar tamu tepercaya Supabase (' + e.message + '). Hapus manual di Authentication, URL Configuration.');
+  }
+  // 4. Tandai di panel
+  const up = await db(jwt, 'owners?id=eq.' + o.id, 'PATCH', { status: 'dihapus', aktif: false, dihapus_pada: new Date().toISOString() });
+  if (!up.ok) warn.push('Website sudah terhapus, tapi status di panel gagal diubah. Ubah manual.');
+  return { ok: true, warn };
+}
+
 module.exports = async (req, res) => {
   res.setHeader('Cache-Control', 'no-store');
   if (req.method !== 'POST') return res.status(405).json({ ok: false, error: 'Metode tidak didukung.' });
@@ -172,6 +273,10 @@ module.exports = async (req, res) => {
     const b = typeof req.body === 'string' ? JSON.parse(req.body || '{}') : (req.body || {});
     if (b.action === 'status') return res.status(200).json(await status(jwt, String(b.project || '')));
     if (b.action === 'buat') return res.status(200).json(await buat(jwt, b));
+    if (b.action === 'ambil') return res.status(200).json(await ambil(jwt, b.owner_id));
+    if (b.action === 'tanda') return res.status(200).json(tanda(b.manifest));
+    if (b.action === 'periksa') return res.status(200).json(periksa(b.manifest, b.sig));
+    if (b.action === 'hapus') return res.status(200).json(await hapus(jwt, b.owner_id));
     return res.status(400).json({ ok: false, error: 'Perintah tidak dikenal.' });
   } catch (e) {
     return res.status(e instanceof Gagal ? 400 : 500).json({ ok: false, error: e instanceof Gagal ? e.message : 'Terjadi kesalahan di server.' });
